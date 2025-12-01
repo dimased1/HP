@@ -120,6 +120,7 @@ async function handleFetch(request, env) {
     const data = await getOrCreateForDate(today, env);
     return new Response(JSON.stringify(data.payload, null, 2), { headers: { 'Content-Type': 'application/json' } });
   }
+  
 
   if (path === '/today') {
     const data = await getOrCreateForDate(today, env);
@@ -127,7 +128,12 @@ async function handleFetch(request, env) {
     const summary = { date: payload.date || today, overview: payload.overview || '', titles: payload.news ? payload.news.map(n => ({ id: n.id, title: n.title })) : [] };
     return new Response(JSON.stringify(summary, null, 2), { headers: { 'Content-Type': 'application/json' } });
   }
-
+if (path === '/update') {
+  const data = await generateAndStore(today, env);
+  return new Response(JSON.stringify(data.payload, null, 2), {
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
   if (path.startsWith('/section/')) {
     const section = path.replace('/section/', '').toLowerCase();
     const data = await getOrCreateForDate(today, env);
