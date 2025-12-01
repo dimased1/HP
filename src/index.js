@@ -1,40 +1,22 @@
 /*
-Cloudflare Workers app: "Ежедневный Пророк"
+Cloudflare Workers app: "Ежедневный Пророк" с локальными магическими новостями, курсом галеонов и гороскопом.
 - Генерирует выдуманную газету раз в сутки, кэшируется в KV на 24 часа
 - Модель: gpt-4o-mini (через OpenAI Responses API)
 - Язык: JavaScript (Workers runtime)
-
-Требуемые привязки (в wrangler.toml):
-- kv_namespaces: { binding = "DAILY_KV", id = "<KV_NAMESPACE_ID>" }
-- vars: OPENAI_API_KEY
-- triggers: cron="0 7 * * *"  (пример: каждый день в 07:00 UTC — настройте как нужно)
-
-Endpoints:
-- GET /all           -> возвращает весь JSON-объект ежедневного выпуска
-- GET /section/:name -> возвращает конкретный раздел (например, /section/1news)
-- GET /today         -> быстрое представление (дата и заголовки)
-
-KV хранит ключ в формате daily:YYYY-MM-DD
 */
 
-// -------------------------
-// Utility: формат даты (YYYY-MM-DD)
 function getDateStr(d = new Date()) {
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+  const day = d.getUTCDate();
+  const months = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+  return `${day} ${months[d.getUTCMonth()]}`;
 }
 
-// -------------------------
-// OpenAI call (Responses API) — модель: gpt-4o-mini
 async function callOpenAI(prompt, env) {
   const body = {
     model: 'gpt-4o-mini',
     input: prompt,
-    // optional: max tokens, temperature
     temperature: 0.9,
-    max_output_tokens: 800
+    max_output_tokens: 1000
   };
 
   const res = await fetch('https://api.openai.com/v1/responses', {
@@ -52,10 +34,7 @@ async function callOpenAI(prompt, env) {
   }
 
   const data = await res.json();
-  // Responses API may nest text in data.output[0].content[0].text or similar.
-  // We'll try a few fallbacks.
   try {
-    // Newer responses API: data.output[0].content -> array of {type:'output_text', text: '...'}
     if (data.output && data.output.length) {
       const contents = data.output.flatMap(o => o.content || []);
       const textParts = contents
@@ -63,11 +42,7 @@ async function callOpenAI(prompt, env) {
         .map(c => c.text);
       if (textParts.length) return textParts.join('\n\n');
     }
-  } catch (e) {
-    // ignore fallback
-  }
-
-  // Legacy fallback: data.choices[0].message.content
+  } catch (e) {}
   if (data.choices && data.choices[0]) {
     const ch = data.choices[0];
     if (ch.message && (ch.message.content || ch.message.role)) {
@@ -75,106 +50,67 @@ async function callOpenAI(prompt, env) {
       if (ch.message.content && ch.message.content.parts) return ch.message.content.parts.join('\n');
     }
   }
-
-  // Last resort: stringify
   return JSON.stringify(data);
 }
 
-// -------------------------
-// Prompt builder (in Russian) — просим строго структурированный JSON
 function buildPromptForDate(dateStr) {
-  return `Ты — генератор выдуманных газетных сводок. Создай JSON-объект для ежедневного выпуска \"Ежедневный Пророк\" на дату ${dateStr} (используй русский язык). Строго верни только JSON без лишних комментариев, со следующей структурой:
+  return `Ты — генератор выдуманных газетных сводок. Создай JSON-объект для ежедневного выпуска "Ежедневный Пророк". Я живу в Великобритании, Шотландия — новости локализованы и магические.
+Дата в поле "date": "${dateStr}" (формат D месяц на русском).
+
+Строго JSON, структура:
 {
-  "date": "YYYY-MM-DD",
-  "overview": "Краткое общее описание дня (1-2 предложения)",
+  "date": "${dateStr}",
+  "overview": "Очень краткое описание дня (одно предложение)",
   "news": [
-    { "id": "1", "title": "...", "description": "30-40 слов" },
-    { "id": "2", "title": "...", "description": "30-40 слов" },
-    { "id": "3", "title": "...", "description": "30-40 слов" }
+    { "id": "1", "title": "...", "description": "60–90 слов. Волшебная новость про персонажа, квиддич, Хогвартс." },
+    { "id": "2", "title": "...", "description": "15–25 слов. Локальная магическая новость Шотландии" },
+    { "id": "3", "title": "...", "description": "15–25 слов. Короткая магическая новость Британии" }
   ],
-  "magic_tip": "Короткий магический совет (одним предложением)"
+  "magic_tip": "Короткий магический совет (одно предложение)",
+  "galleon_rate": "Курс галеона сегодня: X галеонов за фунт",
+  "horoscope": "Краткий гороскоп на день для магов"
+}
+Требования:
+- Заголовки 5–8 слов.
+- Новость №1 длиннее, остальные короче.
+- Все новости — магические и локализованные.
+- Никакого текста вне JSON.`;
 }
 
-Требования к выводу JSON:
-- Поле date обязательно — тот же ${dateStr}
-- Описания: около 30-40 слов каждое (не короче 25 и не длиннее 50 слов)
-- Никакого дополнительного текста вне JSON
-- Заголовки — 5-8 слов максимум
-
-Готовься, что этот JSON будет полезен API-клиентам — строгая JSON-валидация будет выполнена на стороне сервера.`;
+function extractJson(text) {
+  const fenced = text.replace(/```(?:json\n)?([\s\S]*?)```/g, '$1');
+  const first = fenced.indexOf('{');
+  const last = fenced.lastIndexOf('}');
+  if (first !== -1 && last !== -1 && last > first) return fenced.slice(first, last + 1);
+  return fenced;
 }
 
-// -------------------------
-// Формирование и сохранение в KV
 async function generateAndStore(dateStr, env) {
   const prompt = buildPromptForDate(dateStr);
   const raw = await callOpenAI(prompt, env);
-
-  // Попробуем распарсить JSON из ответа — иногда модель оборачивает JSON в ```
   const jsonText = extractJson(raw);
   let parsed;
-  try {
-    parsed = JSON.parse(jsonText);
-  } catch (e) {
-    // если не удалось распарсить — положим текст как поле raw_text
-    parsed = {
-      date: dateStr,
-      overview: '',
-      news: [],
-      magic_tip: '',
-      raw_text: raw
-    };
+  try { parsed = JSON.parse(jsonText); } catch(e) {
+    parsed = { date: dateStr, overview: '', news: [], magic_tip: '', galleon_rate: '', horoscope: '', raw_text: raw };
   }
-
-  // Сохраняем в KV вместе с meta timestamp
-  const toStore = {
-    created_at: new Date().toISOString(),
-    payload: parsed
-  };
-
+  const toStore = { created_at: new Date().toISOString(), payload: parsed };
   await env.DAILY_KV.put(`daily:${dateStr}`, JSON.stringify(toStore));
   return toStore;
 }
 
-// Утилита: извлекает JSON-подстроку из текста
-function extractJson(text) {
-  // убираем ```json ... ``` или ``` ... ```
-  const fenced = text.replace(/```(?:json\n)?([\s\S]*?)```/g, '$1');
-
-  // найдем первый { и последний }
-  const first = fenced.indexOf('{');
-  const last = fenced.lastIndexOf('}');
-  if (first !== -1 && last !== -1 && last > first) {
-    return fenced.slice(first, last + 1);
-  }
-  // fallback: возвращаем весь текст
-  return fenced;
-}
-
-// -------------------------
-// Получить из KV или сгенерировать
 async function getOrCreateForDate(dateStr, env) {
   const key = `daily:${dateStr}`;
   const item = await env.DAILY_KV.get(key);
   if (item) {
     try {
       const parsed = JSON.parse(item);
-      // считаем актуальным, если был создан в тот же день (UTC)
       const created = new Date(parsed.created_at);
-      if (getDateStr(created) === dateStr) {
-        return parsed;
-      }
-    } catch (e) {
-      // ignore и сгенерируем заново
-    }
+      if (getDateStr(created) === dateStr) return parsed;
+    } catch(e){}
   }
-
-  // генерируем и сохраняем
   return await generateAndStore(dateStr, env);
 }
 
-// -------------------------
-// HTTP handlers
 async function handleFetch(request, env) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -182,19 +118,13 @@ async function handleFetch(request, env) {
 
   if (path === '/all') {
     const data = await getOrCreateForDate(today, env);
-    return new Response(JSON.stringify(data.payload, null, 2), {
-      headers: { 'Content-Type': 'application/json' }
-    });
+    return new Response(JSON.stringify(data.payload, null, 2), { headers: { 'Content-Type': 'application/json' } });
   }
 
   if (path === '/today') {
     const data = await getOrCreateForDate(today, env);
     const payload = data.payload;
-    const summary = {
-      date: payload.date || today,
-      overview: payload.overview || '',
-      titles: payload.news ? payload.news.map(n => ({ id: n.id, title: n.title })) : []
-    };
+    const summary = { date: payload.date || today, overview: payload.overview || '', titles: payload.news ? payload.news.map(n => ({ id: n.id, title: n.title })) : [] };
     return new Response(JSON.stringify(summary, null, 2), { headers: { 'Content-Type': 'application/json' } });
   }
 
@@ -202,90 +132,26 @@ async function handleFetch(request, env) {
     const section = path.replace('/section/', '').toLowerCase();
     const data = await getOrCreateForDate(today, env);
     const payload = data.payload;
-
-    // поддерживаем несколько секций: overview, news1, news2, news3, magic
-    if (section === 'overview') {
-      return new Response(JSON.stringify({ overview: payload.overview }), { headers: { 'Content-Type': 'application/json' } });
-    }
-
-    if (section === 'magic') {
-      return new Response(JSON.stringify({ magic_tip: payload.magic_tip }), { headers: { 'Content-Type': 'application/json' } });
-    }
-
-    // newsN
+    if (section === 'overview') return new Response(JSON.stringify({ overview: payload.overview }), { headers: { 'Content-Type': 'application/json' } });
+    if (section === 'magic') return new Response(JSON.stringify({ magic_tip: payload.magic_tip }), { headers: { 'Content-Type': 'application/json' } });
+    if (section === 'galleon') return new Response(JSON.stringify({ galleon_rate: payload.galleon_rate }), { headers: { 'Content-Type': 'application/json' } });
+    if (section === 'horoscope') return new Response(JSON.stringify({ horoscope: payload.horoscope }), { headers: { 'Content-Type': 'application/json' } });
     if (section.startsWith('news')) {
-      const idx = parseInt(section.replace('news', ''), 10);
-      if (!isNaN(idx) && payload.news && payload.news[idx - 1]) {
-        return new Response(JSON.stringify(payload.news[idx - 1], null, 2), { headers: { 'Content-Type': 'application/json' } });
-      }
+      const idx = parseInt(section.replace('news',''),10);
+      if (!isNaN(idx) && payload.news && payload.news[idx-1]) return new Response(JSON.stringify(payload.news[idx-1], null, 2), { headers: { 'Content-Type': 'application/json' } });
     }
-
     return new Response('Not found', { status: 404 });
   }
 
   return new Response('OK — Ежедневный Пророк. Endpoints: /all, /today, /section/:name', { headers: { 'Content-Type': 'text/plain' } });
 }
 
-// -------------------------
-// Scheduled (cron) handler — будет вызываться автоматически по триггеру в wrangler.toml
 async function handleScheduled(env) {
   const today = getDateStr();
-  // Генерируем и сохраняем (если уже есть на дату — генерация пропустится внутри getOrCreateForDate)
-  const stored = await getOrCreateForDate(today, env);
-  return stored;
+  return await getOrCreateForDate(today, env);
 }
 
-// -------------------------
-// Экспорт: поддержка fetch и scheduled
 export default {
-  async fetch(request, env) {
-    try {
-      return await handleFetch(request, env);
-    } catch (e) {
-      return new Response(`Server error: ${e.message}`, { status: 500 });
-    }
-  },
-  // scheduled signature: (controller, env, ctx) in some runtimes — здесь мы поддержим простой вызов
-  async scheduled(controller, env, ctx) {
-    try {
-      await handleScheduled(env);
-    } catch (e) {
-      // логирование
-      console.error('Scheduled error', e);
-    }
-  }
+  async fetch(request, env) { try { return await handleFetch(request, env); } catch(e) { return new Response(`Server error: ${e.message}`, { status: 500 }); } },
+  async scheduled(controller, env, ctx) { try { await handleScheduled(env); } catch(e) { console.error('Scheduled error', e); } }
 };
-
-/*
----------------------------------------
-Пример wrangler.toml (файл проекта):
-
-name = "daily-prophet"
-main = "./cloudflare-daily-prophet-worker.js"
-compatibility_date = "2025-12-01"
-
-[vars]
-OPENAI_API_KEY = "@openai_api_key"  # рекомендуем хранить в секретах wrangler
-
-[[kv_namespaces]]
-binding = "DAILY_KV"
-id = "<KV_NAMESPACE_ID>"
-
-# Cron trigger — пример: каждый день в 07:00 UTC
-[triggers]
-cron = [ "0 7 * * *" ]
-
-# Дополнительно: маршруты, среда публикации и т.д.
----------------------------------------
-
-Инструкции по развертыванию:
-1. Создайте KV namespace: `wrangler kv:namespace create DAILY_KV`
-2. Добавьте ID в wrangler.toml
-3. Сохраните ваш OPENAI_API_KEY в переменных окружения/секретах: `wrangler secret put OPENAI_API_KEY`
-4. `wrangler publish`
-
-Замечания и улучшения:
-- Можно добавить валидацию конечного JSON (проверить длину описаний в словах)
-- Можно кешировать не только в KV, но и в Cache API для очень быстрых ответов
-- Таймзона: тут используется UTC; если в проекте нужна локальная дата — скорректируйте getDateStr
-*/
