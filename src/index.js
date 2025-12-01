@@ -13,7 +13,7 @@ function getDateStr(d = new Date()) {
 
 async function callOpenAI(prompt, env) {
   const body = {
-    model: 'gpt-4o-mini',
+    model: 'gpt-5.1',
     input: prompt,
     temperature: 0.9,
     max_output_tokens: 1000
