@@ -1,0 +1,12 @@
+name = "daily-prophet"
+main = "src/index.js" 
+compatibility_date = "2025-12-01"
+
+# KV-хранилище
+[[kv_namespaces]]
+binding = "DAILY_KV"
+id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"   # ← поставь свой реальный KV namespace ID
+
+# Секреты (должны быть загружены заранее):
+# wrangler secret put OPENAI_API_KEY
+
